@@ -5,6 +5,7 @@
 package app.passwordstore.ui.main
 
 import android.annotation.SuppressLint
+import android.app.SearchManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -89,7 +90,9 @@ class LaunchActivity : AppCompatActivity() {
           )
         }
       else if (intent.action == Intent.ACTION_SEARCH)
-        Intent(this, PasswordStore::class.java).setAction(Intent.ACTION_SEARCH)
+        Intent(this, PasswordStore::class.java)
+          .setAction(Intent.ACTION_SEARCH)
+          .putExtra(SearchManager.QUERY, intent.getStringExtra(SearchManager.QUERY))
       else Intent(this, PasswordStore::class.java).setAction(Intent.ACTION_VIEW)
     startActivity(intentToStart)
 

@@ -4,6 +4,7 @@
  */
 package app.passwordstore.ui.passwords
 
+import android.app.SearchManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
@@ -334,6 +335,10 @@ class PasswordStore : BaseGitActivity() {
         intent.action == Intent.ACTION_SEARCH
     ) {
       searchItem.expandActionView()
+      intent.getStringExtra(SearchManager.QUERY)?.let { query ->
+        intent.removeExtra(SearchManager.QUERY)
+        searchView.setQuery(query, false)
+      }
     }
     return super.onPrepareOptionsMenu(menu)
   }
