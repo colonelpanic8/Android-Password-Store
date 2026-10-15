@@ -26,7 +26,10 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  buildFeatures { compose = true }
+  buildFeatures {
+    aidl = true
+    compose = true
+  }
 
   androidResources { generateLocaleConfig = true }
 

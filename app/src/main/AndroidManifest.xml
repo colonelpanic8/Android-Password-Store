@@ -161,6 +161,18 @@
       </intent-filter>
     </service>
 
+    <service
+      android:name=".eva.EvaExtensionService"
+      android:exported="true"
+      tools:ignore="ExportedService">
+      <intent-filter>
+        <action android:name="com.colonelpanic.eva.action.EXTENSION" />
+      </intent-filter>
+      <meta-data
+        android:name="com.colonelpanic.eva.extension.version"
+        android:value="1" />
+    </service>
+
     <activity
       android:name=".ui.folderselect.SelectFolderActivity"
       android:exported="false" />
