@@ -47,6 +47,37 @@ File `myKeyForPass.sec.asc` can be directly imported into Password Store via Set
 3. Write down the backup code, then save the backup file to your phone.
 4. Import this backup file into Password Store by navigating to Settings → PGP Settings → Key Manager → <kbd>+</kbd>, and enter the backup code when prompted.
 
+## EVA integration
+
+This fork (`colonelpanic8/Android-Password-Store`, branch `eva-extension`) adds an extension for the [EVA](https://github.com/colonelpanic8/eva) assistant. It installs as **Password Store (EVA)**, package `app.passwordstore.colonelpanic`, next to upstream's `app.passwordstore.agrahn`. Each copy has its own store, keys and settings.
+
+- Releases: tags `v<upstream version>-eva.<n>` (for example `v2.0.3-eva.1`) build a signed APK and attach it to a GitHub release, which Obtainium can track. The version code is `(major×10000 + minor×100 + patch)×100 + n`.
+- SHA-256 of the signing certificate: `D1:67:E4:0C:4A:AF:EB:ED:BF:11:3B:6F:1B:65:9E:A8:D2:F2:BC:D6:5E:C5:83:D3:07:60:86:71:B9:45:60:24`
+
+### Extension service
+
+`app.passwordstore.eva.EvaExtensionService` implements EVA's installed-app AIDL protocol v1. Only `com.colonelpanic.eva` signed with EVA's release certificate may call it. Debug builds also accept `com.colonelpanic.eva.debug` signed with the development debug key. Both tools are reads:
+
+| Tool | What it does |
+| --- | --- |
+| `search_entries` | Matches words against entry paths without decrypting anything. Optional `query`, `offset` and `limit` (1–200, default 50); reports `truncated` and `nextOffset`. |
+| `get_credential` | Decrypts one entry (`path`) and returns the username, URL, whether it has a one-time code, and the names of its other fields. The password and the current TOTP code go only into the reply's `secrets`, which EVA hands to the model as fill-only handles. Offered only to EVA versions that announce the `secrets` feature. |
+
+Decryption never shows UI. A key without a passphrase works at any time. A passphrase-protected key only works while the app holds its passphrase in memory: unlock any entry in the app with **Keep passphrase until screen-off** checked (that choice is remembered). The app forgets the passphrase whenever the screen turns off; until you unlock again, `get_credential` returns `not_configured` and says what to do. Fingerprint or PIN fast unlock in the app fills the same cache. The cache needs a hardware-backed keystore, so devices without one can't decrypt protected entries for EVA.
+
+### Intents
+
+Both open the app's normal UI (including the app lock and passphrase prompt) and return nothing:
+
+| Action | Extra | Opens |
+| --- | --- | --- |
+| `app.passwordstore.colonelpanic.action.OPEN_ENTRY` | `path`: entry path without `.gpg`, such as `github.com/alice` | That entry's decrypted view |
+| `app.passwordstore.colonelpanic.action.SEARCH` | `query` (optional) | The password list with the search filled in |
+
+```shell
+adb shell am start -a app.passwordstore.colonelpanic.action.OPEN_ENTRY -p app.passwordstore.colonelpanic --es path github.com/alice
+```
+
 ## Contributing
 
 Issues and pull requests are welcome, but avoid bulky, hard to digest multi-feature contributions, especially AI-generated ones. Refer to the [Changelog](CHANGELOG.md) for the latest fixes and additions.
