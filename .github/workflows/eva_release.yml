@@ -1,0 +1,101 @@
+name: Publish Password Store (EVA) release
+on:
+  push:
+    tags:
+      - 'v*-eva.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eva-release-${{ github.ref }}
+
+jobs:
+  release:
+    name: Build, verify and publish the signed APK
+    runs-on: ubuntu-latest
+    env:
+      # SHA-256 of this fork's release certificate; never publish an APK signed by anything else.
+      EXPECTED_CERT_SHA256: d167e40c4aafebedbf113b6f1b659ea8d2f2bcd65ec583d307608671b9456024
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-read-only: true
+          validate-wrappers: true
+
+      - name: Derive the version from the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]{1,2})\.([0-9]{1,2})-eva\.([1-9][0-9]?)$ ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME must look like v2.0.3-eva.1 (minor, patch and eva number below 100)"
+            exit 1
+          fi
+          code=$(( (BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3]) * 100 + BASH_REMATCH[4] ))
+          sed -i \
+            -e "s/^versioning-plugin.versionName=.*/versioning-plugin.versionName=${GITHUB_REF_NAME#v}/" \
+            -e "s/^versioning-plugin.versionCode=.*/versioning-plugin.versionCode=$code/" \
+            app/version.properties
+          grep '^versioning-plugin' app/version.properties
+
+      - name: Write the signing configuration
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is missing; refusing to build an unsigned release"
+              exit 1
+            fi
+          done
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > keystore.p12
+          printf 'storeFile=keystore.p12\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" > keystore.properties
+
+      - name: Build the release APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: Verify the signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release.apk
+          tools=("$ANDROID_HOME"/build-tools/*)
+          apksigner="$(printf '%s\n' "${tools[@]}" | sort -V | tail -1)/apksigner"
+          "$apksigner" verify "$apk"
+          certs=$("$apksigner" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | sort -u | paste -sd,)
+          if [ "$certs" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::APK signers ($certs) do not match the fork's release certificate"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "$apk" "dist/Password-Store-EVA-$GITHUB_REF_NAME.apk"
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f keystore.p12 keystore.properties
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "dist/Password-Store-EVA-$GITHUB_REF_NAME.apk" \
+            --verify-tag \
+            --title "Password Store (EVA) $GITHUB_REF_NAME" \
+            --notes "Release of the EVA fork (app.passwordstore.colonelpanic), built from $GITHUB_SHA. Signing certificate SHA-256: $EXPECTED_CERT_SHA256."
