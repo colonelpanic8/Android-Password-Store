@@ -95,7 +95,7 @@ class EvaExtensionService : Service() {
                 )
               else ->
                 EvaProtocol.describeReply(
-                  EvaCatalog.descriptor(EvaProtocol.FEATURE_SECRETS in request.features)
+                  EvaCatalog.descriptor(EvaCatalog.Features.of(request.features))
                 )
             }
           }
@@ -132,6 +132,7 @@ class EvaExtensionService : Service() {
           }
         if (inFlight.incrementAndGet() > MAX_IN_FLIGHT) {
           inFlight.decrementAndGet()
+          wipe(call)
           send(
             callback,
             invocationId,
@@ -155,6 +156,7 @@ class EvaExtensionService : Service() {
                   "Nothing was changed.",
               )
             } finally {
+              wipe(call)
               inFlight.decrementAndGet()
             }
           send(callback, invocationId, reply)
@@ -177,11 +179,16 @@ class EvaExtensionService : Service() {
         val entries = withContext(dispatchers.io()) { EvaStoreSearch.listEntries(root, showHidden) }
         EvaStoreSearch.reply(EvaStoreSearch.match(entries, call.request.query), call.request)
       }
-      is EvaCatalog.Call.Credential -> credential(root, call.path, deadline)
+      is EvaCatalog.Call.Credential -> credential(root, call.path, call.passphrase?.chars, deadline)
     }
   }
 
-  private suspend fun credential(root: File, requested: String, deadline: Long): String {
+  private suspend fun credential(
+    root: File,
+    requested: String,
+    passphrase: CharArray?,
+    deadline: Long,
+  ): String {
     val file =
       withContext(dispatchers.io()) { EvaCredential.resolve(root, requested) }
         ?: return EvaProtocol.rejection(
@@ -191,8 +198,7 @@ class EvaExtensionService : Service() {
         )
     if (deadline <= SystemClock.elapsedRealtime()) return expired()
     val path = file.relativeTo(root).invariantSeparatorsPath.removeSuffix(".gpg")
-    val cacheEnabled = settings.getBoolean(PreferenceKeys.CACHE_PASSPHRASE, false)
-    return when (val outcome = decryptor.decrypt(file, root, cacheEnabled)) {
+    return when (val outcome = decryptor.decrypt(file, root, passphrase)) {
       is EvaDecryptor.Outcome.Unavailable ->
         EvaProtocol.rejection(Reason.NOT_CONFIGURED, outcome.message)
       is EvaDecryptor.Outcome.Failed -> EvaProtocol.result(Status.FAILED, null, outcome.message)
@@ -218,6 +224,10 @@ class EvaExtensionService : Service() {
         }
       }
     }
+  }
+
+  private fun wipe(call: EvaCatalog.Call) {
+    (call as? EvaCatalog.Call.Credential)?.passphrase?.wipe()
   }
 
   private fun expired() =

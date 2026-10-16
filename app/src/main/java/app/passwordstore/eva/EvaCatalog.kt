@@ -21,11 +21,34 @@ object EvaCatalog {
   private const val TITLE = "Password Store (EVA)"
   private const val SCOPE_REVISION = "local-store.1"
   private const val MAX_PATH = 1024
+  /** Reserved argument through which EVA passes the user's saved credentials. */
+  private const val CREDENTIALS_KEY = "_credentials"
+  const val PASSPHRASE = "passphrase"
+
+  /** What the describing EVA understands; each combination is its own descriptor revision. */
+  data class Features(val secrets: Boolean, val credentials: Boolean) {
+    companion object {
+      val ALL = listOf(Features(false, false), Features(true, false), Features(true, true))
+
+      /** Only get_credential uses the passphrase, so credentials are declared only with secrets. */
+      fun of(names: Set<String>): Features {
+        val secrets = EvaProtocol.FEATURE_SECRETS in names
+        return Features(secrets, secrets && EvaProtocol.FEATURE_CREDENTIALS in names)
+      }
+    }
+  }
+
+  /** EVA's saved passphrase for one call; [toString] never reveals it. */
+  class Passphrase(val chars: CharArray) {
+    fun wipe() = chars.fill('\u0000')
+
+    override fun toString() = "Passphrase(redacted)"
+  }
 
   sealed interface Call {
     data class Search(val request: EvaStoreSearch.Request) : Call
 
-    data class Credential(val path: String) : Call
+    data class Credential(val path: String, val passphrase: Passphrase? = null) : Call
   }
 
   sealed interface Admission {
@@ -34,28 +57,43 @@ object EvaCatalog {
     data class Rejected(val reply: String) : Admission
   }
 
-  fun revision(secrets: Boolean): String =
-    "v1-" + EvaProtocol.sha256Hex(body(secrets).toString()).take(24)
+  fun revision(features: Features): String =
+    "v1-" + EvaProtocol.sha256Hex(body(features).toString()).take(24)
 
-  fun descriptor(secrets: Boolean): JsonObject = buildJsonObject {
+  fun descriptor(features: Features): JsonObject = buildJsonObject {
     put("protocolVersion", EvaProtocol.VERSION)
-    put("descriptorRevision", revision(secrets))
-    body(secrets).forEach { (key, value) -> put(key, value) }
+    put("descriptorRevision", revision(features))
+    body(features).forEach { (key, value) -> put(key, value) }
   }
 
+  /**
+   * Validates a call. `_credentials` is removed before the arguments are checked and never appears
+   * in a reply; only a get_credential call keeps the passphrase.
+   */
   fun admit(expectedRevision: String, capability: String, argumentsJson: String): Admission {
-    val withSecrets = expectedRevision == revision(true)
-    if (!withSecrets && expectedRevision != revision(false))
-      return reject(
-        Reason.STALE_DESCRIPTOR,
-        "Password Store (EVA) changed its actions since EVA last read them. Nothing was done.",
-      )
-    val args =
+    val features =
+      Features.ALL.firstOrNull { revision(it) == expectedRevision }
+        ?: return reject(
+          Reason.STALE_DESCRIPTOR,
+          "Password Store (EVA) changed its actions since EVA last read them. Nothing was done.",
+        )
+    val parsed =
       StrictJson.parseObject(argumentsJson, EvaProtocol.ARGUMENT_BYTES)
         ?: return invalid("Arguments must be one JSON object within 16 KiB.")
+    val credentials =
+      when (val value = parsed[CREDENTIALS_KEY]) {
+        null -> emptyMap()
+        is JsonObject ->
+          value.mapValues { (_, secret) ->
+            string(secret) ?: return invalid("Every $CREDENTIALS_KEY value must be a string.")
+          }
+        else -> return invalid("$CREDENTIALS_KEY must be an object.")
+      }
+    val args = JsonObject(parsed - CREDENTIALS_KEY)
     return when {
       capability == SEARCH -> search(args)
-      capability == GET_CREDENTIAL && withSecrets -> credential(args)
+      capability == GET_CREDENTIAL && features.secrets ->
+        credential(args, credentials[PASSPHRASE]?.takeIf { it.isNotEmpty() })
       else -> invalid("Password Store (EVA) has no action named \"$capability\".")
     }
   }
@@ -86,7 +124,7 @@ object EvaCatalog {
     )
   }
 
-  private fun credential(args: JsonObject): Admission {
+  private fun credential(args: JsonObject, passphrase: String?): Admission {
     unknownKey(args, setOf("path"))?.let {
       return invalid("Unknown argument \"$it\".")
     }
@@ -94,7 +132,9 @@ object EvaCatalog {
       args["path"]?.let(::string)?.trim()?.takeIf {
         it.isNotEmpty() && it.codePointCount(0, it.length) <= MAX_PATH
       } ?: return invalid("path is required: an entry path returned by search_entries.")
-    return Admission.Accepted(Call.Credential(path))
+    return Admission.Accepted(
+      Call.Credential(path, passphrase?.let { Passphrase(it.toCharArray()) })
+    )
   }
 
   private fun unknownKey(args: JsonObject, allowed: Set<String>) =
@@ -116,13 +156,29 @@ object EvaCatalog {
   private fun reject(reason: Reason, text: String) =
     Admission.Rejected(EvaProtocol.rejection(reason, text))
 
-  private fun body(secrets: Boolean): JsonObject = buildJsonObject {
+  private fun body(features: Features): JsonObject = buildJsonObject {
     put("authorizationScopeRevision", SCOPE_REVISION)
     put("title", TITLE)
     putJsonArray("capabilities") {
-      add(searchCapability(secrets))
-      if (secrets) add(credentialCapability())
+      add(searchCapability(features.secrets))
+      if (features.secrets) add(credentialCapability())
     }
+    if (features.credentials)
+      putJsonArray("credentials") {
+        add(
+          buildJsonObject {
+            put("name", PASSPHRASE)
+            put("title", "PGP key passphrase")
+            put(
+              "description",
+              "Unlocks the password store's private PGP key, so EVA can fill passwords from " +
+                "Password Store (EVA) even while the phone is locked. EVA keeps it encrypted on " +
+                "this device and passes it only to Password Store (EVA) for each lookup.",
+            )
+            put("kind", "password")
+          }
+        )
+      }
   }
 
   private fun searchCapability(secrets: Boolean) =

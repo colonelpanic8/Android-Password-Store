@@ -21,6 +21,7 @@ object EvaProtocol {
   const val DESCRIBE_BYTES = 65_536
   const val ARGUMENT_BYTES = 16_384
   const val FEATURE_SECRETS = "secrets"
+  const val FEATURE_CREDENTIALS = "credentials"
   const val MAX_SECRETS = 8
   const val SECRET_VALUE_CODE_POINTS = 4096
   const val SECRET_LABEL_CODE_POINTS = 120

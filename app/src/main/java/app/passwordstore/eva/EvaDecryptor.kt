@@ -8,9 +8,7 @@ import app.passwordstore.crypto.PGPIdentifier
 import app.passwordstore.crypto.errors.IncorrectPassphraseException
 import app.passwordstore.crypto.errors.NoDecryptionKeyAvailableException
 import app.passwordstore.data.crypto.CryptoRepository
-import app.passwordstore.ui.crypto.BasePGPActivity
 import app.passwordstore.util.coroutines.DispatcherProvider
-import app.passwordstore.util.crypto.AESEncryption
 import app.passwordstore.util.extensions.substringBefore
 import app.passwordstore.util.extensions.toCharArray
 import app.passwordstore.util.extensions.wipe
@@ -22,15 +20,16 @@ import javax.inject.Inject
 import kotlinx.coroutines.withContext
 
 /**
- * Decrypts an entry without UI. Passphrase-protected keys only unlock through the app's own
- * in-memory cache ("Keep passphrase until screen-off"), which the app wipes when the screen turns
- * off; nothing is prompted for or written anywhere.
+ * Decrypts an entry without UI. A passphrase-protected key unlocks with the passphrase EVA supplied
+ * for this call or, failing that, the app's own in-memory cache ("Keep passphrase until
+ * screen-off"); nothing is prompted for or written anywhere.
  */
 class EvaDecryptor
 @Inject
 constructor(
   private val repository: CryptoRepository,
   private val dispatchers: DispatcherProvider,
+  private val cache: EvaPassphraseCache,
 ) {
 
   sealed interface Outcome {
@@ -41,7 +40,8 @@ constructor(
     data class Failed(val message: String) : Outcome
   }
 
-  suspend fun decrypt(file: File, root: File, cacheEnabled: Boolean): Outcome {
+  /** [supplied] is EVA's saved passphrase; it is copied, never kept, and the caller wipes it. */
+  suspend fun decrypt(file: File, root: File, supplied: CharArray?): Outcome {
     val ids =
       withContext(dispatchers.io()) { identifiers(file.parentFile ?: root, root) }
         ?: return Outcome.Unavailable(
@@ -62,23 +62,21 @@ constructor(
           "${ids.joinToString()}). Import it in Settings → PGP settings → Key manager."
       )
 
+    val protected = repository.isPasswordProtected(ids)
+    val useSupplied = protected && supplied != null
     val passphrases: Map<String, CharArray?> =
-      if (!repository.isPasswordProtected(ids)) mapOf("" to null)
-      else {
-        val names = ids.map { it.toString() }.toSet()
-        val cached =
-          withContext(dispatchers.main()) {
-            BasePGPActivity.cachedPassphrases
-              .filterKeys { it in names }
-              .mapValues { it.value.copyOf() }
-          }
-        if (cached.isEmpty())
-          return Outcome.Unavailable(
-            if (AESEncryption.isHardwareBacked()) locked(cacheEnabled) else NO_SECURE_CACHE
-          )
-        cached.mapValues { (_, encrypted) ->
-          (AESEncryption.decrypt(encrypted) ?: charArrayOf()).also { encrypted.wipe() }
+      when {
+        !protected -> mapOf("" to null)
+        supplied != null -> {
+          if (ids.none { repository.isPasswordCorrect(it, null, supplied) })
+            return Outcome.Unavailable(WRONG_SUPPLIED)
+          mapOf("" to supplied.copyOf())
         }
+        !cache.available() -> return Outcome.Unavailable(NO_SECURE_CACHE)
+        else ->
+          cache.passphrases(ids.map { it.toString() }.toSet()).ifEmpty {
+            return Outcome.Unavailable(LOCKED)
+          }
       }
 
     val ciphertext = withContext(dispatchers.io()) { file.readBytes() }.inputStream()
@@ -99,10 +97,11 @@ constructor(
     }
     val errors = results.mapNotNull { it.second.getError() }
     return when {
+      useSupplied && errors.any { it is IncorrectPassphraseException } ->
+        Outcome.Unavailable(WRONG_SUPPLIED)
       errors.any { it is IncorrectPassphraseException } ->
         Outcome.Unavailable(
-          "The passphrase Password Store (EVA) kept no longer unlocks this entry's key. " +
-            locked(cacheEnabled)
+          "The passphrase Password Store (EVA) kept no longer unlocks this entry's key. " + LOCKED
         )
       errors.any { it is NoDecryptionKeyAvailableException } ->
         Outcome.Unavailable(
@@ -116,12 +115,6 @@ constructor(
         )
     }
   }
-
-  private fun locked(cacheEnabled: Boolean) =
-    "Password Store (EVA) is locked: its PGP key needs the passphrase, and the app has none in " +
-      "memory. Open Password Store (EVA), open any entry and unlock it" +
-      (if (cacheEnabled) "" else " with \"Keep passphrase until screen-off\" checked") +
-      ", then ask again. The app forgets the passphrase whenever the screen turns off."
 
   /**
    * The app's .gpg-id lookup: nearest file from [dir] up to [root], comments and subkey marks cut.
@@ -145,10 +138,18 @@ constructor(
   }
 
   private companion object {
+    const val LOCKED =
+      "Password Store (EVA) is locked: its PGP key needs the passphrase. Either save the " +
+        "passphrase in EVA's settings for Password Store (EVA), which also works on a locked " +
+        "phone, or open Password Store (EVA) and unlock any entry with \"Keep passphrase until " +
+        "screen-off\" checked (the app forgets it when the screen turns off). Then ask again."
     val SHORT_ID = Regex("[a-fA-F0-9]{8}")
     const val NO_SECURE_CACHE =
-      "This entry's PGP key needs a passphrase, and this device has no hardware-backed " +
-        "keystore, so Password Store (EVA) cannot keep one in memory for EVA. Open the entry in " +
-        "Password Store (EVA) instead, or use a key without a passphrase."
+      "This entry's PGP key needs a passphrase. Save it in EVA's settings for Password Store " +
+        "(EVA), then ask again. This device has no hardware-backed keystore, so Password Store " +
+        "(EVA) itself cannot keep the passphrase in memory."
+    const val WRONG_SUPPLIED =
+      "The PGP key passphrase saved in EVA is wrong; update it in EVA's settings for Password " +
+        "Store (EVA). Nothing was decrypted."
   }
 }

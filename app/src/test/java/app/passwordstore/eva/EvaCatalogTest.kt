@@ -6,6 +6,7 @@ package app.passwordstore.eva
 
 import app.passwordstore.eva.EvaCatalog.Admission
 import app.passwordstore.eva.EvaCatalog.Call
+import app.passwordstore.eva.EvaCatalog.Features
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -21,11 +22,15 @@ import kotlinx.serialization.json.jsonPrimitive
 
 class EvaCatalogTest {
 
-  private val secretsRevision = EvaCatalog.revision(true)
-  private val plainRevision = EvaCatalog.revision(false)
+  private val plain = Features.of(emptySet())
+  private val secrets = Features.of(setOf("secrets"))
+  private val withCredentials = Features.of(setOf("secrets", "credentials"))
+  private val secretsRevision = EvaCatalog.revision(secrets)
+  private val plainRevision = EvaCatalog.revision(plain)
+  private val credentialsRevision = EvaCatalog.revision(withCredentials)
 
-  private fun toolNames(secrets: Boolean) =
-    EvaCatalog.descriptor(secrets).getValue("capabilities").jsonArray.map {
+  private fun toolNames(features: Features) =
+    EvaCatalog.descriptor(features).getValue("capabilities").jsonArray.map {
       it.jsonObject.getValue("tool").jsonObject.getValue("name").jsonPrimitive.content
     }
 
@@ -43,10 +48,60 @@ class EvaCatalogTest {
 
   @Test
   fun credentialToolIsOnlyAdvertisedToEvaThatStripsSecrets() {
-    assertEquals(listOf(EvaCatalog.SEARCH), toolNames(secrets = false))
-    assertEquals(listOf(EvaCatalog.SEARCH, EvaCatalog.GET_CREDENTIAL), toolNames(secrets = true))
+    assertEquals(listOf(EvaCatalog.SEARCH), toolNames(plain))
+    assertEquals(listOf(EvaCatalog.SEARCH, EvaCatalog.GET_CREDENTIAL), toolNames(secrets))
     assertNotEquals(secretsRevision, plainRevision)
-    assertEquals(secretsRevision, EvaCatalog.revision(true))
+    assertEquals(secretsRevision, EvaCatalog.revision(Features.of(setOf("secrets"))))
+  }
+
+  @Test
+  fun passphraseIsDeclaredOnlyToEvaThatStoresCredentials() {
+    assertNull(EvaCatalog.descriptor(plain)["credentials"])
+    assertNull(EvaCatalog.descriptor(secrets)["credentials"])
+    assertEquals(plain, Features.of(setOf("credentials")))
+    val declared = EvaCatalog.descriptor(withCredentials).getValue("credentials").jsonArray.single()
+    assertEquals("passphrase", declared.jsonObject.getValue("name").jsonPrimitive.content)
+    assertEquals("password", declared.jsonObject.getValue("kind").jsonPrimitive.content)
+    assertEquals(3, setOf(plainRevision, secretsRevision, credentialsRevision).size)
+  }
+
+  @Test
+  fun credentialsAreStrippedBeforeValidationAndNeverEchoed() {
+    val secret = "S3cret-pass"
+    val call =
+      assertIs<Call.Credential>(
+        assertIs<Admission.Accepted>(
+            EvaCatalog.admit(
+              credentialsRevision,
+              EvaCatalog.GET_CREDENTIAL,
+              """{"path":"github.com/alice","_credentials":{"passphrase":"$secret"}}""",
+            )
+          )
+          .call
+      )
+    assertEquals("github.com/alice", call.path)
+    assertEquals(secret, call.passphrase?.chars?.concatToString())
+    assertFalse(secret in call.toString())
+    assertIs<Admission.Accepted>(
+      EvaCatalog.admit(
+        credentialsRevision,
+        EvaCatalog.SEARCH,
+        """{"query":"git","_credentials":{"passphrase":"$secret"}}""",
+      )
+    )
+    listOf(
+        EvaCatalog.GET_CREDENTIAL to
+          """{"path":"a","extra":1,"_credentials":{"passphrase":"$secret"}}""",
+        EvaCatalog.GET_CREDENTIAL to """{"_credentials":{"passphrase":"$secret"}}""",
+        EvaCatalog.GET_CREDENTIAL to """{"path":"a","_credentials":"$secret"}""",
+        EvaCatalog.GET_CREDENTIAL to """{"path":"a","_credentials":{"passphrase":["$secret"]}}""",
+        EvaCatalog.SEARCH to """{"limit":0,"_credentials":{"passphrase":"$secret"}}""",
+      )
+      .forEach { (tool, args) ->
+        val rejected =
+          assertIs<Admission.Rejected>(EvaCatalog.admit(credentialsRevision, tool, args))
+        assertFalse(secret in rejected.reply, args)
+      }
   }
 
   @Test

@@ -11,9 +11,11 @@ import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.android.components.ServiceComponent
 
-/** [app.passwordstore.injection.totp.TotpModule] only covers activities. */
 @Module
 @InstallIn(ServiceComponent::class)
 interface EvaServiceModule {
+  /** [app.passwordstore.injection.totp.TotpModule] only covers activities. */
   @Binds fun bindTotpFinder(impl: UriTotpFinder): TotpFinder
+
+  @Binds fun bindPassphraseCache(impl: AppPassphraseCache): EvaPassphraseCache
 }
