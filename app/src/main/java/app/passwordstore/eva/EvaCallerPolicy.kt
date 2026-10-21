@@ -25,11 +25,12 @@ class EvaCallerPolicy(private val pins: Map<String, Set<String>>) {
     /** The development debug keystore that signs EVA debug builds. */
     const val EVA_DEBUG_CERT = "7e2a02d4ac64162c3ff78af6e8b1ed24cb26649dc6bdd3955fe9410efa5666e3"
 
-    fun forBuild(debug: Boolean) =
+    /** [extraDebugCert] is another EVA Debug signer, such as a local debug keystore's. */
+    fun forBuild(debug: Boolean, extraDebugCert: String = "") =
       EvaCallerPolicy(
         buildMap {
           put(EVA, setOf(EVA_RELEASE_CERT))
-          if (debug) put(EVA_DEBUG, setOf(EVA_DEBUG_CERT))
+          if (debug) put(EVA_DEBUG, setOfNotNull(EVA_DEBUG_CERT, extraDebugCert.ifEmpty { null }))
         }
       )
 

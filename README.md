@@ -56,7 +56,7 @@ This fork (`colonelpanic8/Android-Password-Store`, branch `eva-extension`) adds 
 
 ### Extension service
 
-`app.passwordstore.eva.EvaExtensionService` implements EVA's installed-app AIDL protocol v1. Only `com.colonelpanic.eva` signed with EVA's release certificate may call it. Debug builds also accept `com.colonelpanic.eva.debug` signed with the development debug key. Both tools are reads:
+`app.passwordstore.eva.EvaExtensionService` implements EVA's installed-app AIDL protocol v1. Only `com.colonelpanic.eva` signed with EVA's release certificate may call it. Debug builds also accept `com.colonelpanic.eva.debug` signed with the development debug key, or with the certificate whose SHA-256 digest is passed as `-PevaDebugCert=<sha256>` (such as `./gradlew assembleDebug -PevaDebugCert=$(apksigner verify --print-certs app-debug.apk | sed -n 's/.*SHA-256 digest: //p')` on EVA's debug APK); release builds ignore it. Both tools are reads:
 
 | Tool | What it does |
 | --- | --- |

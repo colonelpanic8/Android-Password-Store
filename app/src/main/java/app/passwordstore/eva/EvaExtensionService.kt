@@ -53,7 +53,7 @@ class EvaExtensionService : Service() {
   @Inject lateinit var dispatchers: DispatcherProvider
   @SettingsPreferences @Inject lateinit var settings: SharedPreferences
 
-  private val policy = EvaCallerPolicy.forBuild(BuildConfig.DEBUG)
+  private val policy = EvaCallerPolicy.forBuild(BuildConfig.DEBUG, BuildConfig.EVA_DEBUG_CERT)
   private val inFlight = AtomicInteger()
   private lateinit var scope: CoroutineScope
 
