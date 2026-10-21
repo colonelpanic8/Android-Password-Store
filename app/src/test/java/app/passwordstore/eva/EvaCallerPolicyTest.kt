@@ -45,4 +45,15 @@ class EvaCallerPolicyTest {
     assertTrue(policy.trusts(EVA_DEBUG))
     assertFalse(policy.trusts(EVA_DEBUG, signer = { EVA_RELEASE_CERT }))
   }
+
+  @Test
+  fun aBuildTimeDebugSignerIsTrustedOnlyInDebugBuilds() {
+    val local = "0d0f59cd1640ed8fd7d9754932c85f4434c282ec274c6a24985986c9046d3dda"
+    val debug = EvaCallerPolicy.forBuild(debug = true, extraDebugCert = local)
+    assertTrue(debug.trusts(EVA_DEBUG, signer = { local }))
+    assertTrue(debug.trusts(EVA_DEBUG))
+    assertFalse(debug.trusts(EVA, signer = { local }))
+    val release = EvaCallerPolicy.forBuild(debug = false, extraDebugCert = local)
+    assertFalse(release.trusts(EVA_DEBUG, signer = { local }))
+  }
 }

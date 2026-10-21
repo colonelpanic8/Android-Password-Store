@@ -82,9 +82,40 @@ class EvaDecryptorTest {
   @Test
   fun wrongSuppliedPassphraseFailsWithoutFallingBackToTheCache() {
     val cache = FakeCache(available = true, kept = PASSPHRASE)
-    val outcome = assertIs<Outcome.Unavailable>(decrypt("not the passphrase", cache))
-    assertTrue("passphrase saved in EVA is wrong" in outcome.message, outcome.message)
+    assertEquals(
+      Outcome.WrongSupplied(
+        "The PGP key passphrase saved in EVA does not unlock this entry's key ($USER_ID); " +
+          "update it in EVA's settings for Password Store (EVA). Nothing was decrypted."
+      ),
+      decrypt("not the passphrase", cache),
+    )
     assertEquals(0, cache.reads)
+  }
+
+  private fun check(supplied: String) = runBlocking {
+    EvaDecryptor(repository, object : DispatcherProvider {}, FakeCache(true, null))
+      .check(root, supplied.toCharArray())
+  }
+
+  @Test
+  fun checkTellsWhetherThePassphraseUnlocksTheStoreKey() {
+    assertEquals(
+      EvaDecryptor.Check.Accepted("It unlocks the store's PGP key. Nothing was decrypted."),
+      check(PASSPHRASE),
+    )
+    assertEquals(
+      EvaDecryptor.Check.Rejected(
+        "It does not unlock the store's PGP key ($USER_ID). Nothing was decrypted."
+      ),
+      check("not the passphrase"),
+    )
+  }
+
+  @Test
+  fun checkWithoutARootKeyIdSaysWhyItCannotCheck() {
+    File(root, ".gpg-id").delete()
+    val outcome = assertIs<EvaDecryptor.Check.Unavailable>(check(PASSPHRASE))
+    assertTrue("no .gpg-id file at its root" in outcome.message, outcome.message)
   }
 
   @Test

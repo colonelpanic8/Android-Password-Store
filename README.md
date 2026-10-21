@@ -56,12 +56,14 @@ This fork (`colonelpanic8/Android-Password-Store`, branch `eva-extension`) adds 
 
 ### Extension service
 
-`app.passwordstore.eva.EvaExtensionService` implements EVA's installed-app AIDL protocol v1. Only `com.colonelpanic.eva` signed with EVA's release certificate may call it. Debug builds also accept `com.colonelpanic.eva.debug` signed with the development debug key. Both tools are reads:
+`app.passwordstore.eva.EvaExtensionService` implements EVA's installed-app AIDL protocol v1. Only `com.colonelpanic.eva` signed with EVA's release certificate may call it. Debug builds also accept `com.colonelpanic.eva.debug` signed with the development debug key, or with the certificate whose SHA-256 digest is passed as `-PevaDebugCert=<sha256>` (such as `./gradlew assembleDebug -PevaDebugCert=$(apksigner verify --print-certs app-debug.apk | sed -n 's/.*SHA-256 digest: //p')` on EVA's debug APK); release builds ignore it. Both tools are reads:
 
 | Tool | What it does |
 | --- | --- |
 | `search_entries` | Matches words against entry paths without decrypting anything. Optional `query`, `offset` and `limit` (1–200, default 50); reports `truncated` and `nextOffset`. |
-| `get_credential` | Decrypts one entry (`path`) and returns the username, URL, whether it has a one-time code, and the names of its other fields. The password and the current TOTP code go only into the reply's `secrets`, which EVA hands to the model as fill-only handles. Offered only to EVA versions that announce the `secrets` feature. |
+| `get_credential` | Decrypts one entry (`path`) and returns the username, URL, whether it has a one-time code, and the names of its other fields. The password and the current TOTP code go only into the reply's `secrets`, which EVA hands to the model as fill-only handles. Optional `fields` (up to 6 names from `fieldNames`, matched ignoring case) adds those fields' values as secrets too, such as a card `number` or `zip` to type on a phone keypad. Offered only to EVA versions that announce the `secrets` feature. |
+
+A requested field becomes a secret named after it: lowercased, with each run of other characters turned into `_`, prefixed `field_` if it does not start with a letter, and numbered from `_2` when the name is taken (`password` and `otp` always are). Its label is `<field> of <path>`. The reply's `fieldSecrets` maps each handed-over field to its secret name. `unavailableFields` lists the requested fields that were not handed over, with the reason `not_found`, `empty` or `too_long` (over EVA's 4,096-character limit). The text names the entry's fields whenever a requested name matched none. The rest of the reply still completes. Values never appear in the text or structured content.
 
 Decryption never shows UI. A key without a passphrase works at any time. For a passphrase-protected key, the service uses, in order:
 
@@ -69,6 +71,8 @@ Decryption never shows UI. A key without a passphrase works at any time. For a p
 2. **The app's own in-memory cache.** Unlock any entry in the app with **Keep passphrase until screen-off** checked; fingerprint or PIN fast unlock fills the same cache. The app forgets the passphrase whenever the screen turns off, and the cache needs a hardware-backed keystore.
 
 With neither, `get_credential` returns `not_configured` and names both fixes.
+
+EVA versions that also announce `credential-check` see the `passphrase` credential marked `checkable`. When the passphrase is saved in EVA, EVA sends the reserved `eva.check_credential` request carrying only that passphrase. The service tests it against the secret key named by the store's root `.gpg-id`, the same test `get_credential` applies, without opening any entry, and answers `accepted` or `rejected`, or `not_configured` when it cannot check (no store, no root `.gpg-id`, or no matching secret key). For those EVA versions, a `get_credential` call that fails because the saved passphrase is wrong also names `passphrase` in `rejectedCredentials`, so EVA marks it as rejected on its settings row.
 
 ### Intents
 

@@ -28,6 +28,8 @@ class EvaCatalogTest {
   private val secretsRevision = EvaCatalog.revision(secrets)
   private val plainRevision = EvaCatalog.revision(plain)
   private val credentialsRevision = EvaCatalog.revision(withCredentials)
+  private val withCheck = Features.of(setOf("secrets", "credentials", "credential-check"))
+  private val checkRevision = EvaCatalog.revision(withCheck)
 
   private fun toolNames(features: Features) =
     EvaCatalog.descriptor(features).getValue("capabilities").jsonArray.map {
@@ -129,6 +131,17 @@ class EvaCatalogTest {
         EvaCatalog.admit(secretsRevision, EvaCatalog.GET_CREDENTIAL, args)
       )
     assertEquals(Call.Credential("github.com/alice"), call.call)
+    assertEquals(
+      Call.Credential("a", fields = listOf("number", "zip code")),
+      assertIs<Admission.Accepted>(
+          EvaCatalog.admit(
+            secretsRevision,
+            EvaCatalog.GET_CREDENTIAL,
+            """{"path":"a","fields":[" number ","zip code"]}""",
+          )
+        )
+        .call,
+    )
   }
 
   @Test
@@ -169,12 +182,107 @@ class EvaCatalogTest {
           it,
         )
       }
-    listOf("{}", """{"path":""}""", """{"path":"a","extra":1}""").forEach {
-      assertEquals(
-        "invalid_arguments",
-        reasonOf(EvaCatalog.admit(secretsRevision, EvaCatalog.GET_CREDENTIAL, it)),
-        it,
+    listOf(
+        "{}",
+        """{"path":""}""",
+        """{"path":"a","extra":1}""",
+        """{"path":"a","fields":"number"}""",
+        """{"path":"a","fields":[1]}""",
+        """{"path":"a","fields":[" "]}""",
+        """{"path":"a","fields":["${"n".repeat(EvaCredential.MAX_FIELD_NAME + 1)}"]}""",
+        """{"path":"a","fields":["a","b","c","d","e","f","g"]}""",
       )
-    }
+      .forEach {
+        assertEquals(
+          "invalid_arguments",
+          reasonOf(EvaCatalog.admit(secretsRevision, EvaCatalog.GET_CREDENTIAL, it)),
+          it,
+        )
+      }
+  }
+
+  @Test
+  fun passphraseIsCheckableOnlyForEvaThatChecksCredentials() {
+    fun checkable(features: Features) =
+      EvaCatalog.descriptor(features)
+        .getValue("credentials")
+        .jsonArray
+        .single()
+        .jsonObject["checkable"]
+        ?.jsonPrimitive
+        ?.content
+    assertNull(checkable(withCredentials))
+    assertEquals("true", checkable(withCheck))
+    assertEquals(withCredentials, Features.of(setOf("secrets", "credentials")))
+    assertEquals(
+      4,
+      setOf(plainRevision, secretsRevision, credentialsRevision, checkRevision).size,
+    )
+  }
+
+  @Test
+  fun aCheckCarriesOnlyThePassphraseAndOnlyForEvaThatChecks() {
+    val secret = "S3cret-pass"
+    val call =
+      assertIs<Call.CheckPassphrase>(
+        assertIs<Admission.Accepted>(
+            EvaCatalog.admit(
+              checkRevision,
+              EvaCatalog.CHECK_CREDENTIAL,
+              """{"_credentials":{"passphrase":"$secret"}}""",
+            )
+          )
+          .call
+      )
+    assertEquals(secret, call.passphrase.chars.concatToString())
+    listOf(
+        checkRevision to """{"path":"a","_credentials":{"passphrase":"$secret"}}""",
+        checkRevision to """{"_credentials":{"passphrase":"$secret","pin":"1"}}""",
+        checkRevision to """{"_credentials":{"passphrase":""}}""",
+        checkRevision to """{}""",
+        credentialsRevision to """{"_credentials":{"passphrase":"$secret"}}""",
+      )
+      .forEach { (revision, args) ->
+        val reply =
+          assertIs<Admission.Rejected>(
+              EvaCatalog.admit(revision, EvaCatalog.CHECK_CREDENTIAL, args)
+            )
+            .reply
+        assertFalse(secret in reply, args)
+        assertEquals("invalid_arguments", reasonOf(Admission.Rejected(reply)))
+      }
+  }
+
+  @Test
+  fun onlyEvaThatChecksCredentialsHearsWhichOneWasRejected() {
+    fun admitted(revision: String) =
+      assertIs<Call.Credential>(
+        assertIs<Admission.Accepted>(
+            EvaCatalog.admit(
+              revision,
+              EvaCatalog.GET_CREDENTIAL,
+              """{"path":"a","fields":["number","zip"],"_credentials":{"passphrase":"x"}}""",
+            )
+          )
+          .call
+      )
+    val checked = admitted(checkRevision)
+    val unchecked = admitted(credentialsRevision)
+    assertTrue(checked.reportsRejection)
+    assertFalse(unchecked.reportsRejection)
+    assertEquals(listOf("number", "zip"), checked.fields)
+    assertEquals(checked.fields, unchecked.fields)
+    assertEquals(
+      """{"protocolVersion":1,"status":"not_executed","reasonCode":"not_configured",""" +
+        """"truncated":false,"content":[{"type":"text","text":"Wrong."}],""" +
+        """"rejectedCredentials":["passphrase"]}""",
+      EvaProtocol.rejection(EvaProtocol.Reason.NOT_CONFIGURED, "Wrong.", setOf("passphrase")),
+    )
+    assertEquals(
+      """{"protocolVersion":1,"status":"completed","reasonCode":null,"truncated":false,""" +
+        """"content":[{"type":"text","text":"It unlocks the key."}],""" +
+        """"structuredContent":{"verdict":"accepted"}}""",
+      EvaProtocol.verdict(true, "It unlocks the key."),
+    )
   }
 }
