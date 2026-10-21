@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file
 
 ## [Unreleased]
 
+## [2.0.3-eva.2] - 2026-10-20
+
+### Added
+
+- Hand requested entry fields, including card numbers and billing ZIP codes, to EVA as secret handles for form filling or phone keypad entry.
+- Check the PGP passphrase saved in EVA and identify a rejected passphrase when a credential lookup fails.
+- Allow development builds to pin the EVA Debug signing certificate at build time.
+
+### Upgrade
+
+- Update EVA to 0.71.2 and re-enable Password Store (EVA) under Extensions → Installed to approve its changed descriptor. The production signing identity and app data are preserved.
+
 ## [2.0.3] - 2026-10-02
 
 ### Added
