@@ -37,20 +37,134 @@ class EvaCredentialTest {
     content: String,
     username: EvaCredential.Username? = null,
     isPasskey: Boolean = false,
+    fields: List<String> = emptyList(),
+    path: String = "github.com/alice",
   ): JsonObject {
     val entry = entry(content)
     return Json.parseToJsonElement(
         EvaCredential.reply(
-          "github.com/alice",
+          path,
           entry,
           username ?: EvaCredential.username(entry, null, null),
           isPasskey,
+          fields,
         )
       )
       .jsonObject
   }
 
   private fun visible(reply: JsonObject) = "${reply["content"]}${reply["structuredContent"]}"
+
+  private fun text(reply: JsonObject) =
+    reply.getValue("content").jsonArray.single().jsonObject.getValue("text").jsonPrimitive.content
+
+  private fun json(literal: String) = Json.parseToJsonElement(literal)
+
+  private val card =
+    "card-pin-8642\n" +
+      "name: Alice Example\n" +
+      "number: 4111 1111 1111 1111\n" +
+      "expiry: 12/29\n" +
+      "cvv: 737\n" +
+      "zip: 90210\n" +
+      "pin:\n"
+
+  @Test
+  fun requestedFieldsTravelOnlyAsSecrets() {
+    val reply = reply(card, fields = listOf("Number", "zip"), path = "cards/visa")
+    assertEquals(
+      json(
+        """{
+          "password": {"value": "card-pin-8642", "label": "Password for cards/visa"},
+          "number": {"value": "4111 1111 1111 1111", "label": "number of cards/visa"},
+          "zip": {"value": "90210", "label": "zip of cards/visa"}
+        }"""
+      ),
+      reply.getValue("secrets"),
+    )
+    val data = reply.getValue("structuredContent").jsonObject
+    assertEquals(
+      json("""[{"field": "number", "secret": "number"}, {"field": "zip", "secret": "zip"}]"""),
+      data.getValue("fieldSecrets"),
+    )
+    assertEquals(json("[]"), data.getValue("unavailableFields"))
+    assertEquals(
+      "Decrypted cards/visa. Its password is available as the secret \"password\". Requested " +
+        "fields handed over as secrets: \"number\" as \"number\", \"zip\" as \"zip\".",
+      text(reply),
+    )
+    listOf("card-pin-8642", "4111", "90210", "737", "12/29").forEach {
+      assertFalse(it in visible(reply), "leaked $it")
+    }
+  }
+
+  @Test
+  fun unavailableFieldsAreNamedWithTheEntrysFields() {
+    val reply =
+      reply(
+        card + "blob: ${"x".repeat(EvaProtocol.SECRET_VALUE_CODE_POINTS + 1)}\n",
+        fields = listOf("card number", "pin", "blob", "cvv", "CVV"),
+        path = "cards/visa",
+      )
+    assertEquals("completed", reply.getValue("status").jsonPrimitive.content)
+    assertEquals(
+      setOf("password", "cvv"),
+      reply.getValue("secrets").jsonObject.keys,
+    )
+    assertEquals(
+      json(
+        """[
+          {"field": "card number", "reason": "not_found"},
+          {"field": "pin", "reason": "empty"},
+          {"field": "blob", "reason": "too_long"}
+        ]"""
+      ),
+      reply.getValue("structuredContent").jsonObject.getValue("unavailableFields"),
+    )
+    assertEquals(
+      "Decrypted cards/visa. Its password is available as the secret \"password\". Requested " +
+        "fields handed over as secrets: \"cvv\" as \"cvv\". Not handed over: \"card number\" " +
+        "(no such field), \"pin\" (empty), \"blob\" (over EVA's 4096-character limit). Its " +
+        "fields are \"number\", \"expiry\", \"cvv\", \"zip\", \"pin\", \"blob\".",
+      text(reply),
+    )
+    assertFalse("xxxx" in visible(reply))
+  }
+
+  @Test
+  fun fieldSecretNamesAvoidCollisions() {
+    val reply =
+      reply(
+        "pw\nPassword: old-pw\nOTP: 1111\nZip Code: 90210\nzip_code: 94117\n" +
+          "3DS PIN: 2468\nКод: 9999\n",
+        fields = listOf("password", "otp", "Zip Code", "zip_code", "3DS PIN", "Код"),
+      )
+    assertEquals(
+      json(
+        """{
+          "password": {"value": "pw", "label": "Password for github.com/alice"},
+          "password_2": {"value": "old-pw", "label": "Password of github.com/alice"},
+          "otp_2": {"value": "1111", "label": "OTP of github.com/alice"},
+          "zip_code": {"value": "90210", "label": "Zip Code of github.com/alice"},
+          "zip_code_2": {"value": "94117", "label": "zip_code of github.com/alice"},
+          "field_3ds_pin": {"value": "2468", "label": "3DS PIN of github.com/alice"},
+          "field": {"value": "9999", "label": "Код of github.com/alice"}
+        }"""
+      ),
+      reply.getValue("secrets"),
+    )
+  }
+
+  @Test
+  fun repliesWithoutFieldsKeepTheirShape() {
+    val data = reply(card).getValue("structuredContent").jsonObject
+    assertNull(data["fieldSecrets"])
+    assertNull(data["unavailableFields"])
+    assertEquals(
+      listOf("number", "expiry", "cvv", "zip", "pin"),
+      data.getValue("fieldNames").jsonArray.map { it.jsonPrimitive.content },
+    )
+  }
 
   @Test
   fun secretValuesOnlyTravelAsSecrets() {

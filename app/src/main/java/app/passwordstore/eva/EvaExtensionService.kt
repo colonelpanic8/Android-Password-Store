@@ -179,7 +179,8 @@ class EvaExtensionService : Service() {
         val entries = withContext(dispatchers.io()) { EvaStoreSearch.listEntries(root, showHidden) }
         EvaStoreSearch.reply(EvaStoreSearch.match(entries, call.request.query), call.request)
       }
-      is EvaCatalog.Call.Credential -> credential(root, call.path, call.passphrase?.chars, deadline)
+      is EvaCatalog.Call.Credential ->
+        credential(root, call.path, call.passphrase?.chars, call.fields, deadline)
     }
   }
 
@@ -187,6 +188,7 @@ class EvaExtensionService : Service() {
     root: File,
     requested: String,
     passphrase: CharArray?,
+    fields: List<String>,
     deadline: Long,
   ): String {
     val file =
@@ -218,6 +220,7 @@ class EvaExtensionService : Service() {
             entry,
             EvaCredential.username(entry, fromPath, getDefaultUsername()),
             isPasskey,
+            fields,
           )
         } finally {
           entry.clear()

@@ -129,6 +129,17 @@ class EvaCatalogTest {
         EvaCatalog.admit(secretsRevision, EvaCatalog.GET_CREDENTIAL, args)
       )
     assertEquals(Call.Credential("github.com/alice"), call.call)
+    assertEquals(
+      Call.Credential("a", fields = listOf("number", "zip code")),
+      assertIs<Admission.Accepted>(
+          EvaCatalog.admit(
+            secretsRevision,
+            EvaCatalog.GET_CREDENTIAL,
+            """{"path":"a","fields":[" number ","zip code"]}""",
+          )
+        )
+        .call,
+    )
   }
 
   @Test
@@ -169,12 +180,22 @@ class EvaCatalogTest {
           it,
         )
       }
-    listOf("{}", """{"path":""}""", """{"path":"a","extra":1}""").forEach {
-      assertEquals(
-        "invalid_arguments",
-        reasonOf(EvaCatalog.admit(secretsRevision, EvaCatalog.GET_CREDENTIAL, it)),
-        it,
+    listOf(
+        "{}",
+        """{"path":""}""",
+        """{"path":"a","extra":1}""",
+        """{"path":"a","fields":"number"}""",
+        """{"path":"a","fields":[1]}""",
+        """{"path":"a","fields":[" "]}""",
+        """{"path":"a","fields":["${"n".repeat(EvaCredential.MAX_FIELD_NAME + 1)}"]}""",
+        """{"path":"a","fields":["a","b","c","d","e","f","g"]}""",
       )
-    }
+      .forEach {
+        assertEquals(
+          "invalid_arguments",
+          reasonOf(EvaCatalog.admit(secretsRevision, EvaCatalog.GET_CREDENTIAL, it)),
+          it,
+        )
+      }
   }
 }

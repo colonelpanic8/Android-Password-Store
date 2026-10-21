@@ -25,8 +25,9 @@ object EvaProtocol {
   const val MAX_SECRETS = 8
   const val SECRET_VALUE_CODE_POINTS = 4096
   const val SECRET_LABEL_CODE_POINTS = 120
+  const val SECRET_NAME_LENGTH = 32
   private const val TEXT_CODE_POINTS = 4000
-  private val SECRET_NAME = Regex("[a-z][a-z0-9_]{0,31}")
+  private val SECRET_NAME = Regex("[a-z][a-z0-9_]{0,${SECRET_NAME_LENGTH - 1}}")
 
   enum class Status(val wire: String) {
     COMPLETED("completed"),

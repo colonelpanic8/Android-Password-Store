@@ -5,6 +5,7 @@
 package app.passwordstore.eva
 
 import app.passwordstore.eva.EvaProtocol.Reason
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -21,6 +22,7 @@ object EvaCatalog {
   private const val TITLE = "Password Store (EVA)"
   private const val SCOPE_REVISION = "local-store.1"
   private const val MAX_PATH = 1024
+  val MAX_FIELDS = EvaProtocol.MAX_SECRETS - EvaCredential.RESERVED_SECRETS.size
   /** Reserved argument through which EVA passes the user's saved credentials. */
   private const val CREDENTIALS_KEY = "_credentials"
   const val PASSPHRASE = "passphrase"
@@ -48,7 +50,11 @@ object EvaCatalog {
   sealed interface Call {
     data class Search(val request: EvaStoreSearch.Request) : Call
 
-    data class Credential(val path: String, val passphrase: Passphrase? = null) : Call
+    data class Credential(
+      val path: String,
+      val passphrase: Passphrase? = null,
+      val fields: List<String> = emptyList(),
+    ) : Call
   }
 
   sealed interface Admission {
@@ -125,15 +131,32 @@ object EvaCatalog {
   }
 
   private fun credential(args: JsonObject, passphrase: String?): Admission {
-    unknownKey(args, setOf("path"))?.let {
+    unknownKey(args, setOf("path", "fields"))?.let {
       return invalid("Unknown argument \"$it\".")
     }
     val path =
       args["path"]?.let(::string)?.trim()?.takeIf {
         it.isNotEmpty() && it.codePointCount(0, it.length) <= MAX_PATH
       } ?: return invalid("path is required: an entry path returned by search_entries.")
+    val badFields =
+      "fields must be an array of at most $MAX_FIELDS field names from fieldNames, each 1 to " +
+        "${EvaCredential.MAX_FIELD_NAME} characters. EVA takes ${EvaProtocol.MAX_SECRETS} " +
+        "secrets per reply and the password and one-time code may use two; ask again for the rest."
+    val fields =
+      when (val value = args["fields"]) {
+        null -> emptyList()
+        is JsonArray ->
+          value
+            .map { item ->
+              string(item)?.trim()?.takeIf {
+                it.isNotEmpty() && it.codePointCount(0, it.length) <= EvaCredential.MAX_FIELD_NAME
+              } ?: return invalid(badFields)
+            }
+            .takeIf { it.size <= MAX_FIELDS } ?: return invalid(badFields)
+        else -> return invalid(badFields)
+      }
     return Admission.Accepted(
-      Call.Credential(path, passphrase?.let { Passphrase(it.toCharArray()) })
+      Call.Credential(path, passphrase?.let { Passphrase(it.toCharArray()) }, fields)
     )
   }
 
@@ -247,7 +270,11 @@ object EvaCatalog {
           "username (from the entry, else derived from its path by the app's directory-structure " +
           "setting), the URL if stored, whether it has a one-time code, and the names of its " +
           "other fields. The password and the current one-time code are returned only as secrets: " +
-          "you receive handles you can type into a field, never the values. While the key " +
+          "you receive handles you can type into a field, never the values. To type another " +
+          "field's value, such as a card number, expiry date, CVV or ZIP code on a form or a " +
+          "phone call's keypad, name the field in fields, from fieldNames or a likely guess. Each " +
+          "comes back as a secret named in fieldSecrets. unavailableFields says why any did not, " +
+          "and the text lists the entry's field names when a name matches none. While the key " +
           "is locked this fails with not_configured; the user must unlock any entry in Password " +
           "Store (EVA) with \"Keep passphrase until screen-off\" checked, then ask again.",
       waitMillis = 20_000,
@@ -257,6 +284,20 @@ object EvaCatalog {
           put("minLength", 1)
           put("maxLength", MAX_PATH)
           put("description", "Entry path exactly as search_entries returned it.")
+        }
+        putJsonObject("fields") {
+          put("type", "array")
+          put("maxItems", MAX_FIELDS)
+          putJsonObject("items") {
+            put("type", "string")
+            put("minLength", 1)
+            put("maxLength", EvaCredential.MAX_FIELD_NAME)
+          }
+          put(
+            "description",
+            "Names from fieldNames whose values to hand over as secrets, such as a card number " +
+              "or ZIP code to type on a phone keypad. Omit when only the login is needed.",
+          )
         }
       },
       required = listOf("path"),
@@ -280,9 +321,42 @@ object EvaCatalog {
             buildJsonObject {
               put("type", "array")
               put("items", scalar("string"))
-              put("description", "Names of other fields; their values are not returned.")
+              put("description", "Names of other fields; values only as requested secrets.")
             },
           "hasNotes" to scalar("boolean", "The entry has free-form notes, which are not returned."),
+          "fieldSecrets" to
+            buildJsonObject {
+              put("type", "array")
+              put(
+                "items",
+                outputObject(
+                  listOf("field", "secret"),
+                  "field" to scalar("string"),
+                  "secret" to scalar("string", "Name of the secret holding the field's value."),
+                ),
+              )
+              put("description", "Requested fields handed over, present when fields was given.")
+            },
+          "unavailableFields" to
+            buildJsonObject {
+              put("type", "array")
+              put(
+                "items",
+                outputObject(
+                  listOf("field", "reason"),
+                  "field" to scalar("string"),
+                  "reason" to
+                    buildJsonObject {
+                      put("type", "string")
+                      put(
+                        "enum",
+                        EvaProtocol.stringArray(EvaCredential.FieldProblem.entries.map { it.wire }),
+                      )
+                    },
+                ),
+              )
+              put("description", "Requested fields not handed over, present when fields was given.")
+            },
         ),
     )
 

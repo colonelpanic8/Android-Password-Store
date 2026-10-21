@@ -61,7 +61,9 @@ This fork (`colonelpanic8/Android-Password-Store`, branch `eva-extension`) adds 
 | Tool | What it does |
 | --- | --- |
 | `search_entries` | Matches words against entry paths without decrypting anything. Optional `query`, `offset` and `limit` (1–200, default 50); reports `truncated` and `nextOffset`. |
-| `get_credential` | Decrypts one entry (`path`) and returns the username, URL, whether it has a one-time code, and the names of its other fields. The password and the current TOTP code go only into the reply's `secrets`, which EVA hands to the model as fill-only handles. Offered only to EVA versions that announce the `secrets` feature. |
+| `get_credential` | Decrypts one entry (`path`) and returns the username, URL, whether it has a one-time code, and the names of its other fields. The password and the current TOTP code go only into the reply's `secrets`, which EVA hands to the model as fill-only handles. Optional `fields` (up to 6 names from `fieldNames`, matched ignoring case) adds those fields' values as secrets too, such as a card `number` or `zip` to type on a phone keypad. Offered only to EVA versions that announce the `secrets` feature. |
+
+A requested field becomes a secret named after it: lowercased, with each run of other characters turned into `_`, prefixed `field_` if it does not start with a letter, and numbered from `_2` when the name is taken (`password` and `otp` always are). Its label is `<field> of <path>`. The reply's `fieldSecrets` maps each handed-over field to its secret name. `unavailableFields` lists the requested fields that were not handed over, with the reason `not_found`, `empty` or `too_long` (over EVA's 4,096-character limit). The text names the entry's fields whenever a requested name matched none. The rest of the reply still completes. Values never appear in the text or structured content.
 
 Decryption never shows UI. A key without a passphrase works at any time. For a passphrase-protected key, the service uses, in order:
 
