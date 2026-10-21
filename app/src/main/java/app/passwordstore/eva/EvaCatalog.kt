@@ -24,16 +24,36 @@ object EvaCatalog {
   /** Reserved argument through which EVA passes the user's saved credentials. */
   private const val CREDENTIALS_KEY = "_credentials"
   const val PASSPHRASE = "passphrase"
+  /** EVA's reserved request to check one declared credential; tool names never contain a dot. */
+  const val CHECK_CREDENTIAL = "eva.check_credential"
 
-  /** What the describing EVA understands; each combination is its own descriptor revision. */
-  data class Features(val secrets: Boolean, val credentials: Boolean) {
+  /**
+   * What the describing EVA understands; each combination is its own descriptor revision, so an
+   * execute call's expected revision says which features its EVA speaks.
+   */
+  data class Features(
+    val secrets: Boolean,
+    val credentials: Boolean,
+    val credentialCheck: Boolean = false,
+  ) {
     companion object {
-      val ALL = listOf(Features(false, false), Features(true, false), Features(true, true))
+      val ALL =
+        listOf(
+          Features(false, false),
+          Features(true, false),
+          Features(true, true),
+          Features(true, true, true),
+        )
 
       /** Only get_credential uses the passphrase, so credentials are declared only with secrets. */
       fun of(names: Set<String>): Features {
         val secrets = EvaProtocol.FEATURE_SECRETS in names
-        return Features(secrets, secrets && EvaProtocol.FEATURE_CREDENTIALS in names)
+        val credentials = secrets && EvaProtocol.FEATURE_CREDENTIALS in names
+        return Features(
+          secrets,
+          credentials,
+          credentials && EvaProtocol.FEATURE_CREDENTIAL_CHECK in names,
+        )
       }
     }
   }
@@ -48,7 +68,17 @@ object EvaCatalog {
   sealed interface Call {
     data class Search(val request: EvaStoreSearch.Request) : Call
 
-    data class Credential(val path: String, val passphrase: Passphrase? = null) : Call
+    /**
+     * With [reportsRejection], a wrong [passphrase] is named in the reply's rejectedCredentials.
+     */
+    data class Credential(
+      val path: String,
+      val passphrase: Passphrase? = null,
+      val reportsRejection: Boolean = false,
+    ) : Call
+
+    /** EVA asks whether [passphrase] unlocks the store's key; nothing is decrypted. */
+    data class CheckPassphrase(val passphrase: Passphrase) : Call
   }
 
   sealed interface Admission {
@@ -68,7 +98,7 @@ object EvaCatalog {
 
   /**
    * Validates a call. `_credentials` is removed before the arguments are checked and never appears
-   * in a reply; only a get_credential call keeps the passphrase.
+   * in a reply; only a get_credential call or a check keeps the passphrase.
    */
   fun admit(expectedRevision: String, capability: String, argumentsJson: String): Admission {
     val features =
@@ -93,7 +123,12 @@ object EvaCatalog {
     return when {
       capability == SEARCH -> search(args)
       capability == GET_CREDENTIAL && features.secrets ->
-        credential(args, credentials[PASSPHRASE]?.takeIf { it.isNotEmpty() })
+        credential(
+          args,
+          credentials[PASSPHRASE]?.takeIf { it.isNotEmpty() },
+          features.credentialCheck,
+        )
+      capability == CHECK_CREDENTIAL && features.credentialCheck -> check(args, credentials)
       else -> invalid("Password Store (EVA) has no action named \"$capability\".")
     }
   }
@@ -124,7 +159,18 @@ object EvaCatalog {
     )
   }
 
-  private fun credential(args: JsonObject, passphrase: String?): Admission {
+  private fun check(args: JsonObject, credentials: Map<String, String>): Admission {
+    val passphrase = credentials[PASSPHRASE]
+    if (args.isNotEmpty() || credentials.size != 1 || passphrase.isNullOrEmpty())
+      return invalid("A credential check carries only the $PASSPHRASE credential.")
+    return Admission.Accepted(Call.CheckPassphrase(Passphrase(passphrase.toCharArray())))
+  }
+
+  private fun credential(
+    args: JsonObject,
+    passphrase: String?,
+    reportsRejection: Boolean,
+  ): Admission {
     unknownKey(args, setOf("path"))?.let {
       return invalid("Unknown argument \"$it\".")
     }
@@ -133,7 +179,7 @@ object EvaCatalog {
         it.isNotEmpty() && it.codePointCount(0, it.length) <= MAX_PATH
       } ?: return invalid("path is required: an entry path returned by search_entries.")
     return Admission.Accepted(
-      Call.Credential(path, passphrase?.let { Passphrase(it.toCharArray()) })
+      Call.Credential(path, passphrase?.let { Passphrase(it.toCharArray()) }, reportsRejection)
     )
   }
 
@@ -176,6 +222,7 @@ object EvaCatalog {
                 "this device and passes it only to Password Store (EVA) for each lookup.",
             )
             put("kind", "password")
+            if (features.credentialCheck) put("checkable", true)
           }
         )
       }
