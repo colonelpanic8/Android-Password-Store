@@ -180,7 +180,21 @@ class EvaExtensionService : Service() {
         EvaStoreSearch.reply(EvaStoreSearch.match(entries, call.request.query), call.request)
       }
       is EvaCatalog.Call.Credential ->
-        credential(root, call.path, call.passphrase?.chars, call.fields, deadline)
+        credential(
+          root,
+          call.path,
+          call.passphrase?.chars,
+          call.fields,
+          call.reportsRejection,
+          deadline,
+        )
+      is EvaCatalog.Call.CheckPassphrase ->
+        when (val check = decryptor.check(root, call.passphrase.chars)) {
+          is EvaDecryptor.Check.Accepted -> EvaProtocol.verdict(true, check.message)
+          is EvaDecryptor.Check.Rejected -> EvaProtocol.verdict(false, check.message)
+          is EvaDecryptor.Check.Unavailable ->
+            EvaProtocol.rejection(Reason.NOT_CONFIGURED, check.message)
+        }
     }
   }
 
@@ -189,6 +203,7 @@ class EvaExtensionService : Service() {
     requested: String,
     passphrase: CharArray?,
     fields: List<String>,
+    reportsRejection: Boolean,
     deadline: Long,
   ): String {
     val file =
@@ -203,6 +218,12 @@ class EvaExtensionService : Service() {
     return when (val outcome = decryptor.decrypt(file, root, passphrase)) {
       is EvaDecryptor.Outcome.Unavailable ->
         EvaProtocol.rejection(Reason.NOT_CONFIGURED, outcome.message)
+      is EvaDecryptor.Outcome.WrongSupplied ->
+        EvaProtocol.rejection(
+          Reason.NOT_CONFIGURED,
+          outcome.message,
+          if (reportsRejection) setOf(EvaCatalog.PASSPHRASE) else emptySet(),
+        )
       is EvaDecryptor.Outcome.Failed -> EvaProtocol.result(Status.FAILED, null, outcome.message)
       is EvaDecryptor.Outcome.Decrypted -> {
         val entry = entryFactory.create(outcome.chars)
@@ -230,7 +251,11 @@ class EvaExtensionService : Service() {
   }
 
   private fun wipe(call: EvaCatalog.Call) {
-    (call as? EvaCatalog.Call.Credential)?.passphrase?.wipe()
+    when (call) {
+      is EvaCatalog.Call.Credential -> call.passphrase?.wipe()
+      is EvaCatalog.Call.CheckPassphrase -> call.passphrase.wipe()
+      is EvaCatalog.Call.Search -> Unit
+    }
   }
 
   private fun expired() =

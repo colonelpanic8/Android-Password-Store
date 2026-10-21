@@ -14,7 +14,10 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** Wire shapes of EVA's installed-app AIDL protocol v1, plus the `secrets` reply extension. */
+/**
+ * Wire shapes of EVA's installed-app AIDL protocol v1, plus the `secrets`, `credentials` and
+ * `credential-check` extensions.
+ */
 object EvaProtocol {
   const val VERSION = 1
   const val RESULT_BYTES = 16_384
@@ -22,6 +25,7 @@ object EvaProtocol {
   const val ARGUMENT_BYTES = 16_384
   const val FEATURE_SECRETS = "secrets"
   const val FEATURE_CREDENTIALS = "credentials"
+  const val FEATURE_CREDENTIAL_CHECK = "credential-check"
   const val MAX_SECRETS = 8
   const val SECRET_VALUE_CODE_POINTS = 4096
   const val SECRET_LABEL_CODE_POINTS = 120
@@ -83,6 +87,7 @@ object EvaProtocol {
     structured: JsonObject? = null,
     secrets: Map<String, Secret> = emptyMap(),
     truncated: Boolean = false,
+    rejectedCredentials: Set<String> = emptySet(),
   ): String {
     require(status != Status.COMPLETED || reason == null) { "Completed replies carry no reason" }
     require(secrets.isEmpty() || status == Status.COMPLETED) {
@@ -90,6 +95,9 @@ object EvaProtocol {
     }
     require(secrets.size <= MAX_SECRETS && secrets.keys.all(SECRET_NAME::matches)) {
       "At most $MAX_SECRETS secrets with lowercase names"
+    }
+    require(rejectedCredentials.isEmpty() || status != Status.COMPLETED) {
+      "Only unsuccessful replies reject credentials"
     }
     val (bounded, cut) = truncate(text, TEXT_CODE_POINTS)
     return buildJsonObject {
@@ -99,6 +107,8 @@ object EvaProtocol {
       put("truncated", truncated || cut)
       put("content", content(bounded))
       structured?.let { put("structuredContent", it) }
+      if (rejectedCredentials.isNotEmpty())
+        put("rejectedCredentials", stringArray(rejectedCredentials))
       if (secrets.isNotEmpty())
         put(
           "secrets",
@@ -118,7 +128,17 @@ object EvaProtocol {
       .toString()
   }
 
-  fun rejection(reason: Reason, text: String) = result(Status.NOT_EXECUTED, reason, text)
+  fun rejection(reason: Reason, text: String, rejectedCredentials: Set<String> = emptySet()) =
+    result(Status.NOT_EXECUTED, reason, text, rejectedCredentials = rejectedCredentials)
+
+  /** The reply to EVA's `eva.check_credential`: a verdict on the one credential it sent. */
+  fun verdict(accepted: Boolean, text: String) =
+    result(
+      Status.COMPLETED,
+      null,
+      text,
+      buildJsonObject { put("verdict", if (accepted) "accepted" else "rejected") },
+    )
 
   fun describeReply(descriptor: JsonObject): String = buildJsonObject {
     put("protocolVersion", VERSION)

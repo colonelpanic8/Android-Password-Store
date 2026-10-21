@@ -72,6 +72,8 @@ Decryption never shows UI. A key without a passphrase works at any time. For a p
 
 With neither, `get_credential` returns `not_configured` and names both fixes.
 
+EVA versions that also announce `credential-check` see the `passphrase` credential marked `checkable`. When the passphrase is saved in EVA, EVA sends the reserved `eva.check_credential` request carrying only that passphrase. The service tests it against the secret key named by the store's root `.gpg-id`, the same test `get_credential` applies, without opening any entry, and answers `accepted` or `rejected`, or `not_configured` when it cannot check (no store, no root `.gpg-id`, or no matching secret key). For those EVA versions, a `get_credential` call that fails because the saved passphrase is wrong also names `passphrase` in `rejectedCredentials`, so EVA marks it as rejected on its settings row.
+
 ### Intents
 
 Both open the app's normal UI (including the app lock and passphrase prompt) and return nothing:

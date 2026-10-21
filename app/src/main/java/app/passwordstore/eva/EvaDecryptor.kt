@@ -37,7 +37,47 @@ constructor(
 
     data class Unavailable(val message: String) : Outcome
 
+    /** EVA's passphrase does not unlock the entry's key; [message] names the key. */
+    data class WrongSupplied(val message: String) : Outcome
+
     data class Failed(val message: String) : Outcome
+  }
+
+  /** What [check] learned about EVA's passphrase without decrypting anything. */
+  sealed interface Check {
+    val message: String
+
+    data class Accepted(override val message: String) : Check
+
+    data class Rejected(override val message: String) : Check
+
+    data class Unavailable(override val message: String) : Check
+  }
+
+  /**
+   * Whether [supplied] unlocks the secret key of the store's root `.gpg-id`, the same test
+   * [decrypt] applies before it reads an entry. No entry is opened.
+   */
+  suspend fun check(root: File, supplied: CharArray): Check {
+    val ids =
+      withContext(dispatchers.io()) { identifiers(root, root) }
+        ?: return Check.Unavailable(
+          "The password store has no .gpg-id file at its root, so Password Store (EVA) cannot " +
+            "tell which key to check the passphrase against. It is still used for each entry."
+        )
+    missingKey(ids)?.let {
+      return Check.Unavailable(it)
+    }
+    if (!repository.isPasswordProtected(ids))
+      return Check.Accepted(
+        "The store's PGP key has no passphrase, so Password Store (EVA) does not need this one."
+      )
+    return if (ids.any { repository.isPasswordCorrect(it, null, supplied) })
+      Check.Accepted("It unlocks the store's PGP key. Nothing was decrypted.")
+    else
+      Check.Rejected(
+        "It does not unlock the store's PGP key (${ids.joinToString()}). Nothing was decrypted."
+      )
   }
 
   /** [supplied] is EVA's saved passphrase; it is copied, never kept, and the caller wipes it. */
@@ -48,19 +88,9 @@ constructor(
           "This entry's folder has no .gpg-id file, so Password Store (EVA) cannot tell which " +
             "key encrypts it. Open the entry in the app to choose a key."
         )
-    if (ids.isEmpty())
-      return Outcome.Unavailable(
-        "The .gpg-id file for this entry lists no usable key IDs. Fix it in Password Store (EVA)."
-      )
-    if (!repository.hasKeys())
-      return Outcome.Unavailable(
-        "Password Store (EVA) has no PGP key. Import one in Settings → PGP settings → Key manager."
-      )
-    if (ids.none { repository.hasDecKey(it) })
-      return Outcome.Unavailable(
-        "Password Store (EVA) has no secret key for this entry (encrypted for " +
-          "${ids.joinToString()}). Import it in Settings → PGP settings → Key manager."
-      )
+    missingKey(ids)?.let {
+      return Outcome.Unavailable(it)
+    }
 
     val protected = repository.isPasswordProtected(ids)
     val useSupplied = protected && supplied != null
@@ -69,7 +99,7 @@ constructor(
         !protected -> mapOf("" to null)
         supplied != null -> {
           if (ids.none { repository.isPasswordCorrect(it, null, supplied) })
-            return Outcome.Unavailable(WRONG_SUPPLIED)
+            return wrongSupplied(ids)
           mapOf("" to supplied.copyOf())
         }
         !cache.available() -> return Outcome.Unavailable(NO_SECURE_CACHE)
@@ -97,8 +127,7 @@ constructor(
     }
     val errors = results.mapNotNull { it.second.getError() }
     return when {
-      useSupplied && errors.any { it is IncorrectPassphraseException } ->
-        Outcome.Unavailable(WRONG_SUPPLIED)
+      useSupplied && errors.any { it is IncorrectPassphraseException } -> wrongSupplied(ids)
       errors.any { it is IncorrectPassphraseException } ->
         Outcome.Unavailable(
           "The passphrase Password Store (EVA) kept no longer unlocks this entry's key. " + LOCKED
@@ -115,6 +144,25 @@ constructor(
         )
     }
   }
+
+  private fun wrongSupplied(ids: List<PGPIdentifier>) =
+    Outcome.WrongSupplied(
+      "The PGP key passphrase saved in EVA does not unlock this entry's key " +
+        "(${ids.joinToString()}); update it in EVA's settings for Password Store (EVA). " +
+        "Nothing was decrypted."
+    )
+
+  /** Why none of [ids] has a usable secret key here, or null when one does. */
+  private fun missingKey(ids: List<PGPIdentifier>): String? =
+    when {
+      ids.isEmpty() -> "The .gpg-id file lists no usable key IDs. Fix it in Password Store (EVA)."
+      !repository.hasKeys() ->
+        "Password Store (EVA) has no PGP key. Import one in Settings → PGP settings → Key manager."
+      ids.none { repository.hasDecKey(it) } ->
+        "Password Store (EVA) has no secret key for ${ids.joinToString()}. Import it in " +
+          "Settings → PGP settings → Key manager."
+      else -> null
+    }
 
   /**
    * The app's .gpg-id lookup: nearest file from [dir] up to [root], comments and subkey marks cut.
@@ -148,8 +196,5 @@ constructor(
       "This entry's PGP key needs a passphrase. Save it in EVA's settings for Password Store " +
         "(EVA), then ask again. This device has no hardware-backed keystore, so Password Store " +
         "(EVA) itself cannot keep the passphrase in memory."
-    const val WRONG_SUPPLIED =
-      "The PGP key passphrase saved in EVA is wrong; update it in EVA's settings for Password " +
-        "Store (EVA). Nothing was decrypted."
   }
 }
