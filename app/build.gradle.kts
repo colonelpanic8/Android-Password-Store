@@ -16,6 +16,9 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
 }
 
+val evaDebugCert =
+  providers.gradleProperty("evaDebugCert").map { it.replace(":", "").lowercase() }.orElse("")
+
 android {
   compileOptions { isCoreLibraryDesugaringEnabled = true }
   namespace = "app.passwordstore"
@@ -24,6 +27,17 @@ android {
     minSdk = 26
     applicationId = "app.passwordstore.colonelpanic"
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    buildConfigField("String", "EVA_DEBUG_CERT", "\"\"")
+  }
+
+  buildTypes {
+    named("debug") {
+      val cert = evaDebugCert.get()
+      require(cert.isEmpty() || cert.matches(Regex("[0-9a-f]{64}"))) {
+        "evaDebugCert must be the SHA-256 digest of EVA Debug's signing certificate (64 hex digits), got '$cert'"
+      }
+      buildConfigField("String", "EVA_DEBUG_CERT", "\"$cert\"")
+    }
   }
 
   buildFeatures {
